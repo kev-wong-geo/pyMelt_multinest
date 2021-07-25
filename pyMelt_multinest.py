@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Created on Sun Jul 25 17:23:00 2021
+
+@author: kev
+"""
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 import pyMelt as m
 import numpy as np
@@ -10,6 +18,7 @@ from scipy.interpolate import interp1d
 import json
 import os
 import pandas as pd
+import sys
 
 class inversion:
     """
@@ -41,6 +50,8 @@ class inversion:
         uniform ('uni'), log-uniform ('log-uni'), normal ('norm'), or log-normal ('lognorm').
     SpreadingCenter bool
         Model as a spreading center, or not? Default is True.
+    ContinentalRift bool
+        Model as a magma-assisted continental rift, or not? Default is False.
     TcrysShallow    bool
         Use the shallow Tcrys endmember, as opposed to the deep endmember. Default is True
     bouyancy    bool
@@ -60,7 +71,7 @@ class inversion:
         The name to call the inversion, and the name of the folder to store the results in.
 
     """
-    def __init__(self,lithologies,data,knowns,unknowns,SpreadingCenter=True,
+    def __init__(self,lithologies,data,knowns,unknowns,SpreadingCenter=True, ContinentalRift=False, traces=False,
                  TcrysShallow=True,buoyancy=False,buoyancyPx='kg1',resume=False,
                  DensityFile='LithDensity_80kbar.csv',livepoints=400,name='default'):
 
@@ -73,26 +84,34 @@ class inversion:
         self.lithologies = lithologies
         self.lithology_names = ['lz','px','hz']
         self.SpreadingCenter = SpreadingCenter
+        self.ContinentalRift = ContinentalRift
+        self.traces = traces
         self.TcrysShallow = TcrysShallow
         self.buoyancy = buoyancy
         self.buoyancyPx = buoyancyPx
         self.DensityFile = DensityFile
         self.resume = resume
-
-        if self.buoyancy == False:
-            self.var_list = ['Tp','DeltaS','P_lith','P_cryst','F_px','F_hz']
-        else:
-            if 'Q' in self.data.keys():
-                self.var_list = ['Tp','DeltaS','P_lith','P_cryst','F_px','F_hz',
-                             'ambientTp','ambientPx','ambientHz','r','mu']
-            else:
-                self.var_list = ['Tp','DeltaS','P_lith','P_cryst','F_px','F_hz',
-                                 'ambientTp','ambientPx','ambientHz']
+        
+        if self.SpreadingCenter and self.ContinentalRift == True:
+            sys.exit('The system cannot simultaneously be an oceanic spreading center and a continental rift.')
+            
+        variables = ['Tp','DeltaS','P_lith','P_cryst','F_px','F_hz']
+        
+        if self.buoyancy == True:
+            variables.extend(['ambientTp','ambientPx','ambientHz'])
+            if 'Qv' in self.data.keys() or 'Qb' in self.data.keys() or 'Qm' in self.data.keys():
+                variables.extend(['r','mu'])
             self.rho = pd.read_csv(DensityFile,sep='\t')
             self.rhoLz = interp1d(self.rho.Tp,self.rho.klb1,fill_value='extrapolate')
             self.rhoHz = interp1d(self.rho.Tp,self.rho.hz,fill_value='extrapolate')
             self.rhoPx = interp1d(self.rho.Tp,self.rho[self.buoyancyPx],fill_value='extrapolate')
-
+            
+        if self.traces == True:
+            if 'La_Yb' in self.data.keys() and 'Dy_Yb' in self.data.keys() :
+                variables.extend(['La_lz', 'Dy_lz', 'Yb_lz', 'La_px', 'Dy_px', 'Yb_px'])
+            else:
+                sys.exit('Please enter \'La/Yb\', and \'Dy/Yb\' into the data and the prior source compositions.')
+        self.var_list = variables
 
         self.unknowns_list = list()
         for variable in self.var_list:
@@ -100,7 +119,6 @@ class inversion:
                 print('Please provide a value for '+variable+'.')
             if variable in list(self.unknowns.keys()):
                 self.unknowns_list.append(variable)
-
 
     def prior(self,cube,ndim,nparams):
         i = 0
@@ -117,14 +135,11 @@ class inversion:
                 if self.unknowns[var][0] == 'lognorm':
                     g = lognorm(self.unknowns[var][1][0],self.unknowns[var][1][1])
                     cube[i] = g.ppf(cube[i])
-
                 i = i+1
         return cube
-
+    
     def loglike(self,cube,ndim,nparams):
-        # List of values to pass to the forward model function
         x = list()
-        # Position in n-dimensional cube
         i = 0
         for var in self.var_list:
             if var in self.unknowns:
@@ -133,12 +148,15 @@ class inversion:
             else:
                 x.append(self.knowns[var])
 
-
         for i in range(len(self.lithologies)):
             self.lithologies[i].DeltaS = x[1]
-
         run_model = True
+        
         if x[4] + x[5] > 1.0:
+            run_model = False
+            likelihood = -1e10*np.exp(1+x[4]+x[5])
+            
+        if x[2] < x[3]:
             run_model = False
             likelihood = -1e10*np.exp(1+x[4]+x[5])
 
@@ -146,44 +164,54 @@ class inversion:
             proportions = [(1.0-x[5]-x[4]),x[4],x[5]]
 
             mantle = m.mantle(self.lithologies,proportions,self.lithology_names)
-            if self.SpreadingCenter == False:
-                results = mantle.AdiabaticMelt_1D(x[0],Pend=x[2],Pstart=10,ReportSSS=False)
+            
+            if self.SpreadingCenter == False: 
+                results = mantle.AdiabaticMelt_1D(x[0],Pend=x[2],Pstart=10,steps=500,ReportSSS=False)
             else:
-                results = mantle.AdiabaticMelt_1D(x[0],Pstart=10,ReportSSS=False)
+                results = mantle.AdiabaticMelt_1D(x[0],Pstart=10,steps=500,ReportSSS=False)
             if self.SpreadingCenter == True:
                 results.integrate_tri()
+            if self.ContinentalRift == True:
+                results.integrate_tri(P_base_existingLith=x[2], extract_melt=True)
 
             likelihood = 0
 
-            if self.buoyancy == True or 'Q' in self.data.keys():
+            if self.buoyancy == True or 'Qv' in self.data.keys() or 'Qb' in self.data.keys() or 'Qm' in self.data.keys():
                 ambient_rho = ((1.0-x[7]-x[8])*self.rhoLz(x[6])+
                                    x[7]*self.rhoPx(x[6])+
                                    x[8]*self.rhoHz(x[6])
                                     )
-
                 model_rho = ((1.0-x[4]-x[5])*self.rhoLz(x[0])+
                                    x[4]*self.rhoPx(x[0])+
                                    x[5]*self.rhoHz(x[0])
                                     )
-
                 buoyancy = ambient_rho - model_rho
 
-            if 'Q' in self.data.keys():
-                Q = np.pi/8 * (buoyancy * 9.81 * x[9]**4)/x[10] * results.F_total.max()
-                likelihood = (likelihood + (-0.5*(np.log(2*np.pi*self.data['Q'][1]**2))-
-                            (self.data['Q'][0]-Q)**2/(2*self.data['Q'][1]**2)))
+            if 'Qv' in self.data.keys():
+                Qv = np.pi/8 * (buoyancy * 9.81 * x[9]**4)/x[10] 
+                likelihood = (likelihood + (-0.5*(np.log(2*np.pi*self.data['Qv'][1]**2))-
+                            (self.data['Qv'][0]-Qv)**2/(2*self.data['Qv'][1]**2)))
+            
+            elif 'Qb' in self.data.keys():
+                Qv = np.pi/8 * (buoyancy * 9.81 * x[9]**4)/x[10] # In m3/s
+                Qb = (Qv/1e3) * model_rho * 30e-6 * (x[0]-x[6])  
+                likelihood = (likelihood + (-0.5*(np.log(2*np.pi*self.data['Qb'][1]**2))-
+                            (self.data['Qb'][0]-Qb)**2/(2*self.data['Qb'][1]**2)))
+                
+            elif 'Qm' in self.data.keys():
+                Qm = np.pi/8 * (buoyancy * 9.81 * x[9]**4)/x[10] * results.F_total.max()
+                likelihood = (likelihood + (-0.5*(np.log(2*np.pi*self.data['Qm'][1]**2))-
+                            (self.data['Qm'][0]-Qm)**2/(2*self.data['Qm'][1]**2)))
 
             if self.buoyancy == True:
                 if buoyancy < 0:
-                    likelihood = likelihood - np.exp(-buoyancy) - 1
-
+                    likelihood = likelihood - np.exp(-buoyancy) - 1 
 
             if 'Tcrys' in self.data.keys():
                 if self.SpreadingCenter == True:
-                    TcrysMin, TcrysMax = results.MeltCrystallisationT(ShallowMeltP=False,MeltStorageP=False)
+                    TcrysMin, TcrysMax = results.MeltCrystallisationT(ShallowMeltP=False,MeltStorageP=False)              
                 else:
                     TcrysMin, TcrysMax = results.MeltCrystallisationT(ShallowMeltP=x[2],MeltStorageP=x[3])
-
                 if self.TcrysShallow == True:
                     likelihood = (likelihood + (-0.5*(np.log(2*np.pi*self.data['Tcrys'][1]**2))-
                             (self.data['Tcrys'][0]-TcrysMin)**2/(2*self.data['Tcrys'][1]**2)))
@@ -192,14 +220,30 @@ class inversion:
                             (self.data['Tcrys'][0]-TcrysMax)**2/(2*self.data['Tcrys'][1]**2)))
 
             if 'tc' in self.data.keys():
-                likelihood = (likelihood + (-0.5*(np.log(2*np.pi*self.data['tc'][1]**2))-
-                            (self.data['tc'][0]-results.tc)**2/(2*self.data['tc'][1]**2)))
+                if self.SpreadingCenter == True or self.ContinentalRift == True:
+                    likelihood = (likelihood + (-0.5*(np.log(2*np.pi*self.data['tc'][1]**2))-
+                                (self.data['tc'][0]-results.tc)**2/(2*self.data['tc'][1]**2)))
 
             if 'Fpx' in self.data.keys():
-                if self.SpreadingCenter == True:
+                if self.SpreadingCenter == True or self.ContinentalRift == True:
                     likelihood = (likelihood + (-0.5*(np.log(2*np.pi*self.data['Fpx'][1]**2))-
                             (self.data['Fpx'][0]-results.tc_lithology_contributions[1])**2/(2*self.data['Fpx'][1]**2)))
-
+                    
+            if self.traces==True:
+                model_lz = [x[-6],x[-5],x[-4]]
+                model_px = [x[-3],x[-2],x[-1]]
+                if self.SpreadingCenter == True or self.ContinentalRift == True:
+                    rares = results.RareEarths(models=[model_lz,model_px,None],Passive=True,normalise='PM',modal='NonModalFixed',RareEarths=['La','Dy','Yb'])
+                else:
+                    rares = results.RareEarths(models=[model_lz,model_px,None],Passive=False,normalise='PM',modal='NonModalFixed',RareEarths=['La','Dy','Yb'])
+                rares = rares.iloc[-1]
+                rares_La_Yb = rares['La']/rares['Yb']
+                rares_Dy_Yb = rares['Dy']/rares['Yb']
+                likelihood = (likelihood + (-0.5*(np.log(2*np.pi*self.data['La_Yb'][1]**2))-
+                            (self.data['La_Yb'][0]-rares_La_Yb)**2/(2*self.data['La_Yb'][1]**2)))
+                likelihood = (likelihood + (-0.5*(np.log(2*np.pi*self.data['Dy_Yb'][1]**2))-
+                            (self.data['Dy_Yb'][0]-rares_Dy_Yb)**2/(2*self.data['Dy_Yb'][1]**2)))
+                
         return likelihood
 
     def run_multinest(self,verbose=True):
