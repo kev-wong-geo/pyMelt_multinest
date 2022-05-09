@@ -203,7 +203,6 @@ class inversion:
         for i in range(len(self.lithologies)):
             self.lithologies[i].DeltaS = x[1]
         run_model = True
-
         if x[self.var_list.index('F_px')] + x[self.var_list.index('F_hz')] > 1.0:
             run_model = False
             likelihood = -1e10 * np.exp(1 + x[self.var_list.index('F_px')] +
@@ -220,7 +219,8 @@ class inversion:
             mantle = m.mantle(self.lithologies, proportions, self.lithology_names)
             SolidusPressures = mantle.solidusIntersection(x[self.var_list.index('Tp')])
 
-            if np.isnan(SolidusPressures).all() is True:
+            SolidusPressureCheck = np.isnan(SolidusPressures).all()
+            if SolidusPressureCheck:
                 run_model = False
                 likelihood = -1e12
             else:
