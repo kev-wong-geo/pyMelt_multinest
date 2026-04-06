@@ -41,9 +41,7 @@ class inversion:
     knowns and
     unknowns:
     La_lz, Dy_lz, Yb_lz (concentrations of La, Dy, and Yb in mantle lherzolite)
-    La_px, Dy_px, Yb_px (concentrations of La, Dy, and Yb in mantle pyroxenite
-                         if not using MORBmelts)
-    MORBmelts (melt fraction of a MORB batch melt if using MORBmelts)
+    La_px, Dy_px, Yb_px (concentrations of La, Dy, and Yb in mantle pyroxenite)
 
     Parameters
     ----------
@@ -73,8 +71,6 @@ class inversion:
         Allow supersolidus solutions or not? Default is True.
     Traces     bool
         Model with trace element constraints or not? Default is False.
-    MORBmelts  bool
-        Model pyroxenite traces with melts of MORB or not? Default is False
     TcrysShallow    bool
         Use the shallow Tcrys endmember, as opposed to the deep endmember. Default is True
     bouyancy    bool
@@ -97,7 +93,7 @@ class inversion:
 
     def __init__(self, lithologies, data, knowns, unknowns, DeltaP=0.004, SpreadingCentre=True,
                  ContinentalRift=False, Passive=True, SuperSolidus=True, Traces=False,
-                 MORBmelts=False, TcrysShallow=True, buoyancy=False, buoyancyPx='kg1',
+                 TcrysShallow=True, buoyancy=False, buoyancyPx='kg1',
                  resume=False, DensityFile='LithDensity_80kbar.csv', livepoints=400,
                  name='default'):
 
@@ -115,22 +111,25 @@ class inversion:
         self.Passive = Passive
         self.SuperSolidus = SuperSolidus
         self.Traces = Traces
-        self.MORBmelts = MORBmelts
         self.TcrysShallow = TcrysShallow
         self.buoyancy = buoyancy
         self.buoyancyPx = buoyancyPx
         self.DensityFile = DensityFile
         self.resume = resume
 
+        # Can't be a spreading centre and a continental rift
         if (self.SpreadingCentre and self.ContinentalRift) is True:
-            sys.exit('The system cannot simultaneously be an oceanic spreading center '
+            sys.exit('The system cannot simultaneously be an oceanic spreading centre '
                      + 'and a continental rift.')
 
-        if self.Traces is False and self.MORBmelts is True:
-            sys.exit('Cannot model pyroxenite traces without considering all traces.')
+        # Minimum variables needed to run MORB/Iceland
+        variables = ['Tp', 'DeltaS', 'F_px', 'F_hz']
 
-        variables = ['Tp', 'DeltaS', 'P_lith', 'P_cryst', 'F_px', 'F_hz']
+        # If not a spreading centre, then we need lithospheric and crustal pressure
+        if self.SpreadingCentre is False:
+            variables.extend(['P_lith', 'P_cryst'])
 
+        # If buoyancy is considered, then include buoyancy terms
         if self.buoyancy is True:
             variables.extend(['ambientTp', 'ambientPx', 'ambientHz'])
 
@@ -154,10 +153,7 @@ class inversion:
         if self.Traces is True:
             if ('La_Yb' and 'Dy_Yb') in self.data.keys():
                 variables.extend(['La_lz', 'Dy_lz', 'Yb_lz'])
-                if self.MORBmelts is True:
-                    variables.extend(['MORBmelts'])
-                else:
-                    variables.extend(['La_px', 'Dy_px', 'Yb_px'])
+                variables.extend(['La_px', 'Dy_px', 'Yb_px'])
             else:
                 sys.exit('Please enter \'La/Yb\', and \'Dy/Yb\' into the data and the '
                          + 'prior source compositions.'
@@ -213,34 +209,34 @@ class inversion:
             likelihood = -1e10 * np.exp(1 + x[self.var_list.index('F_px')] +
                                         x[self.var_list.index('F_hz')])
 
-        elif x[self.var_list.index('P_lith')] < x[self.var_list.index('P_cryst')]:
-            run_model = False
-            likelihood = -1e10 * np.exp(1 + x[self.var_list.index('P_lith')] +
-                                        x[self.var_list.index('P_cryst')])
-
-        else:
-            proportions = [(1.0 - x[self.var_list.index('F_hz')] - x[self.var_list.index('F_px')]),
-                           x[self.var_list.index('F_px')], x[self.var_list.index('F_hz')]]
-            mantle = m.mantle(self.lithologies, proportions, self.lithology_names)
-            SolidusPressures = mantle.solidusIntersection(x[self.var_list.index('Tp')])
-
-            SolidusPressureCheck = np.isnan(SolidusPressures).all()
-            if SolidusPressureCheck:
+        if self.SpreadingCentre is False:
+            if x[self.var_list.index('P_lith')] < x[self.var_list.index('P_cryst')]:
                 run_model = False
-                likelihood = -1e12
-            else:
-                self.SolidusIntersectP = np.nanmax(SolidusPressures)
+                likelihood = -1e10 * np.exp(1 + x[self.var_list.index('P_lith')] +
+                                            x[self.var_list.index('P_cryst')])
 
-                if self.SuperSolidus is False:
-                    LzSolidusPressureCheck = np.isnan(SolidusPressures[0])
-                    PxSolidusPressureCheck = np.isnan(SolidusPressures[1])
-                    if LzSolidusPressureCheck:
-                        run_model = False
-                        likelihood = -1e12
-                    elif PxSolidusPressureCheck:
-                        run_model = False
-                        likelihood = -1e12
-    
+
+        proportions = [(1.0 - x[self.var_list.index('F_hz')] - x[self.var_list.index('F_px')]),
+                        x[self.var_list.index('F_px')], x[self.var_list.index('F_hz')]]
+        mantle = m.mantle(self.lithologies, proportions, self.lithology_names)
+
+        # Check if the solidii are being intersected at the given Tp
+        SolidusPressures = mantle.solidusIntersection(x[self.var_list.index('Tp')])
+        if np.isnan(SolidusPressures).all():
+            run_model = False
+            likelihood = -1e12
+        else:
+            self.SolidusIntersectP = np.nanmax(SolidusPressures)
+
+            if self.SuperSolidus is False:
+                if np.isnan(SolidusPressures[0]):
+                    run_model = False
+                    likelihood = -1e12
+                elif np.isnan(SolidusPressures[1]):
+                    run_model = False
+                    likelihood = -1e12
+
+            if self.SpreadingCentre is False:
                 if self.SolidusIntersectP < x[self.var_list.index('P_lith')]:
                     run_model = False
                     likelihood = -1e10 * np.exp(1 + x[self.var_list.index('P_lith')] -
@@ -251,8 +247,6 @@ class inversion:
                                                 self.SolidusIntersectP)
 
         if run_model is True:
-            # print(x)  # debugging
-            # print(self.var_list)  # debugging
             likelihood = 0
 
             if self.SpreadingCentre is True:
@@ -268,72 +262,37 @@ class inversion:
                                                ReportSSS=False)
 
             if self.Traces is True:
-                if self.MORBmelts is True:
-                    La_px = 0.192 / (x[self.var_list.index('MORBmelts')] * (1 - 0.01) + 0.01)
-                    Dy_px = 0.505 / (x[self.var_list.index('MORBmelts')] * (1 - 0.079) + 0.079)
-                    Yb_px = 0.365 / (x[self.var_list.index('MORBmelts')] * (1 - 0.115) + 0.115)
-                    results.calculateChemistry(
-                        elements={'lz': {'La': x[self.var_list.index('La_lz')],
-                                         'Dy': x[self.var_list.index('Dy_lz')],
-                                         'Yb': x[self.var_list.index('Yb_lz')]},
-                                  'px': {'La': La_px,
-                                         'Dy': Dy_px,
-                                         'Yb': Yb_px},
-                                  'hz': m.chemistry.workman05_dmm},
-                        cpxExhaustion={'lz': 0.18,
-                                       'px': 0.70,
-                                       'hz': 0.10},
-                        garnetOut={
-                            'lz': m.chemistry.mineralTransition_linear(
-                                {'gradient': 1/666.7, 'intercept': 400/666.7}),
-                            'px': m.chemistry.mineralTransition_isobaric(
-                                {'transition_pressure': 1.5}),
-                            'hz': m.chemistry.mineralTransition_isobaric(
-                                {'transition_pressure': 1.5}),
-                                     },
-                        spinelIn={
-                            'lz': m.chemistry.mineralTransition_linear(
-                                {'gradient': 1/666.7, 'intercept': 533/666.7}),
-                            'px': m.chemistry.mineralTransition_isobaric(
-                                {'transition_pressure': 2.5}),
-                            'hz': m.chemistry.mineralTransition_isobaric(
-                                {'transition_pressure': 2.5}),
-                                     },
-                        mineralProportions={'lz': m.chemistry.klb1_MineralProportions,
-                                            'px': m.chemistry.kg1_MineralProportions,
-                                            'hz': m.chemistry.klb1_MineralProportions}
-                        )
-                else:
-                    results.calculateChemistry(
-                        elements={'lz': {'La': x[self.var_list.index('La_lz')],
-                                         'Dy': x[self.var_list.index('Dy_lz')],
-                                         'Yb': x[self.var_list.index('Yb_lz')]},
-                                  'px': {'La': x[self.var_list.index('La_px')],
-                                         'Dy': x[self.var_list.index('Dy_px')],
-                                         'Yb': x[self.var_list.index('Yb_px')]},
-                                  'hz': m.chemistry.workman05_dmm},
-                        cpxExhaustion={'lz': 0.18,
-                                       'px': 0.70,
-                                       'hz': 0.10},
-                        garnetOut={
-                            'lz': m.chemistry.mineralTransition_linear(
-                                {'gradient': 1/666.7, 'intercept': 400/666.7}),
-                            'px': m.chemistry.mineralTransition_isobaric(
-                                {'transition_pressure': 1.5}),
-                            'hz': m.chemistry.mineralTransition_isobaric(
-                                {'transition_pressure': 1.5}),
-                                     },
-                        spinelIn={
-                            'lz': m.chemistry.mineralTransition_linear(
-                                {'gradient': 1/666.7, 'intercept': 533/666.7}),
-                            'px': m.chemistry.mineralTransition_isobaric(
-                                {'transition_pressure': 2.5}),
-                            'hz': m.chemistry.mineralTransition_isobaric(
-                                {'transition_pressure': 2.5}),
-                                     },
-                        mineralProportions={'lz': m.chemistry.klb1_MineralProportions,
-                                            'px': m.chemistry.kg1_MineralProportions,
-                                            'hz': m.chemistry.klb1_MineralProportions}
+                results.calculateChemistry(
+                    elements={
+                        'lz': {'La': x[self.var_list.index('La_lz')],
+                               'Dy': x[self.var_list.index('Dy_lz')],
+                               'Yb': x[self.var_list.index('Yb_lz')]},
+                        'px': {'La': x[self.var_list.index('La_px')],
+                               'Dy': x[self.var_list.index('Dy_px')],
+                               'Yb': x[self.var_list.index('Yb_px')]},
+                        'hz': m.chemistry.workman05_dmm},
+                    cpxExhaustion={'lz': 0.18,
+                                   'px': 0.70,
+                                   'hz': 0.10},
+                    garnetOut={
+                        'lz': m.chemistry.mineralTransition_linear(
+                            {'gradient': 1/666.7, 'intercept': 400/666.7}),
+                        'px': m.chemistry.mineralTransition_isobaric(
+                            {'transition_pressure': 1.5}),
+                        'hz': m.chemistry.mineralTransition_isobaric(
+                            {'transition_pressure': 1.5}),
+                                    },
+                    spinelIn={
+                        'lz': m.chemistry.mineralTransition_linear(
+                            {'gradient': 1/666.7, 'intercept': 533/666.7}),
+                        'px': m.chemistry.mineralTransition_isobaric(
+                            {'transition_pressure': 2.5}),
+                        'hz': m.chemistry.mineralTransition_isobaric(
+                            {'transition_pressure': 2.5}),
+                                    },
+                    mineralProportions={'lz': m.chemistry.klb1_MineralProportions,
+                                        'px': m.chemistry.kg1_MineralProportions,
+                                        'hz': m.chemistry.klb1_MineralProportions}
                         )
 
             if self.Passive is True:
@@ -383,6 +342,11 @@ class inversion:
                              x[self.var_list.index('F_hz')] *
                              self.rhoHz(x[self.var_list.index('Tp')]))
                 buoyancy = ambient_rho - model_rho
+                if buoyancy < 0:
+                    likelihood = likelihood - np.exp(-buoyancy) - 1
+
+            if 'T_crys' in self.data.keys():
+                print('TYPO: T_crys')
 
             if 'Qv' in self.data.keys():
                 Qv = np.pi/8 * (buoyancy * 9.81 *
@@ -404,10 +368,6 @@ class inversion:
                 likelihood = (
                     likelihood + (-0.5 * (np.log(2 * np.pi * self.data['Qm'][1]**2)) -
                                   (self.data['Qm'][0] - Qm)**2 / (2*self.data['Qm'][1]**2)))
-
-            if self.buoyancy is True:
-                if buoyancy < 0:
-                    likelihood = likelihood - np.exp(-buoyancy) - 1
 
             if 'Tcrys' in self.data.keys():
                 if self.SpreadingCentre is True:
@@ -431,7 +391,6 @@ class inversion:
                                       (2 * self.data['Tcrys'][1]**2)))
 
             if 'tc' in self.data.keys():
-
                 if self.SpreadingCentre or self.ContinentalRift:
                     likelihood = (
                         likelihood + (-0.5 * (np.log(2 * np.pi * self.data['tc'][1]**2)) -
